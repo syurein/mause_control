@@ -13,7 +13,7 @@ import time
 
 # --- 状況判断のための「しきい値」設定 ---
 # この値以下のIMUの加速度なら「静止」とみなす (m/s^2)
-STATIONARY_IMU_ACCEL_THRESHOLD = 0.10
+STATIONARY_IMU_ACCEL_THRESHOLD = 0.0001
 # 1フレームでこのピクセル数以下のカメラの動きなら「静止/ノイズ」とみなす
 STATIONARY_CAM_PIXEL_THRESHOLD = 5.0
 
@@ -26,7 +26,7 @@ ALPHA_STATIONARY = 0.1
 IMU_SENSITIVITY = 150000.0
 
 # --- シリアル通信設定 ---
-SERIAL_PORT = 'COM10' 
+SERIAL_PORT = 'COM12' 
 BAUD_RATE = 115200
 
 # --- マウス・カメラ設定 ---
@@ -107,7 +107,7 @@ def main():
                 if event == '終了' or event == sg.WIN_CLOSED: break
 
             # --- データの取得 ---
-            ret, frame = cap.read();
+            ret, frame = cap.read()
             if not ret: break
             frame = cv2.flip(frame, 1)
             
