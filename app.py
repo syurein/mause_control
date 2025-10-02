@@ -1,3 +1,6 @@
+# ===================================================================
+# --- ライブラリのインポート (Import Libraries) ---
+# ===================================================================
 import serial
 import serial.tools.list_ports
 import cv2
@@ -11,57 +14,59 @@ from threading import Thread
 import socket
 
 # ===================================================================
-# --- 設定 (Settings) ---
+# --- 設定項目 (Initial Settings) ---
+# これらの値はUIから変更可能です
 # ===================================================================
 
 # --- シリアル通信設定 ---
-# 'auto'に設定すると利用可能なポートを自動で探します
-# Windowsの例: 'COM12' / Macの例: '/dev/tty.usbmodem14201'
 SERIAL_PORT = 'COM12'
 BAUD_RATE = 115200
+
+# --- Webサーバー設定 ---
 FLASK_PORT = 5000
 
-# --- 状況判断のための「しきい値」設定 ---
-# この値以下のIMUの加速度なら「静止」とみなす (m/s^2)
-STATIONARY_IMU_ACCEL_THRESHOLD = 0.0001
-# 1フレームでこのピクセル数以下のカメラの動きなら「静止/ノイズ」とみなす
-STATIONARY_CAM_PIXEL_THRESHOLD = 5.0
+# --- IMU (BNO055) 設定 ---
+SENSITIVITY_X = 5.0   # X軸（水平方向）の感度
+SENSITIVITY_Y = -10.0 # Y軸（垂直方向）の感度
+DEAD_ZONE = 0.5       # IMUの動きを無視する閾値
 
-# --- センサーフュージョン設定 ---
-# 状態1(通常時)に、どのくらいカメラの値を信じるかの割合
-ALPHA_NORMAL = 0.5
-# 状態3(静止時)に、カメラのノイズをどのくらい無視するかの割合 (非常に小さい値)
-ALPHA_STATIONARY = 0.1
-# IMUの移動量に対するマウスの感度
-IMU_SENSITIVITY = 15000000.0
-
-# --- マウス・カメラ設定 ---
-BRIGHT_SPOT_THRESHOLD = 200 # この輝度値以上の点を追跡
-MOUSE_MOVE_DURATION = 0.0 # 0にすることで最も機敏に反応
+# --- カメラ設定 ---
+BRIGHT_SPOT_THRESHOLD = 100 # 追跡対象とみなす輝度の閾値
 SAFETY_MARGIN_PERCENT = 0.1 # カメラ映像の端を除外する割合
 
+# --- センサーフュージョン設定 ---
+ALPHA_NORMAL = 0.8      # 通常時のカメラ追従度
+ALPHA_STATIONARY = 0.1  # 静止時のノイズ抑制強度
+
 # --- UI・デバッグ設定 ---
-UI_ENABLED = True
+UI_ENABLED = True # FalseにするとGUIウィンドウを表示しません
 
 # ===================================================================
-# --- プログラム本体 (ここから下は変更不要です) ---
+# --- プログラム本体 (ここから下は原則として変更不要です) ---
 # ===================================================================
 
 # --- グローバル変数 ---
 mouse_control_active = True
-pyautogui.FAILSAFE = False # 画面の隅にマウスを移動してもプログラムを終了しない
+pyautogui.FAILSAFE = False
 fused_screen_x, fused_screen_y = pyautogui.size()[0] / 2, pyautogui.size()[1] / 2
 last_cam_x, last_cam_y = fused_screen_x, fused_screen_y
 
 def find_serial_port():
-    """利用可能なシリアルポートを探して最初のポートを返す"""
+    """利用可能なシリアルポートを探してPicoと思われるポートを返す"""
     ports = serial.tools.list_ports.comports()
     if not ports:
         return None
     print("利用可能なシリアルポート:")
     for port in ports:
-        print(f"  - {port.device}")
-    return ports[0].device
+        print(f"  - {port.device} ({port.description})")
+    for port in ports:
+        if 'pico' in port.description.lower() or 'usb serial' in port.description.lower():
+            print(f"Picoと思われるポート '{port.device}' を選択しました。")
+            return port.device
+    if ports:
+        print(f"Picoが見つからないため、最初のポート '{ports[0].device}' を選択します。")
+        return ports[0].device
+    return None
 
 def get_ip_address():
     """ローカルIPアドレスを取得する"""
@@ -81,44 +86,44 @@ def toggle_mouse_control(event=None):
     status = '再開' if mouse_control_active else '一時停止'
     print(f"\n[操作] マウス制御を{status}しました。(ESCキーで切り替え)")
 
-# ESCキーでマウス制御をトグル
 keyboard.on_press_key("esc", toggle_mouse_control)
 
 def run_flask_app(ser_instance):
     """Webサーバーを起動してシリアル通信を中継する"""
     app = Flask(__name__)
-
     @app.route('/send/<data>')
     def send_data(data):
-        """URLに応じてシリアルポートにデータを送信する"""
         if ser_instance and ser_instance.is_open:
-            if data == '1' or data == '2':
+            if data in ['1', '2']:
                 try:
                     ser_instance.write(data.encode('utf-8'))
                     print(f"📨 [Web] デバイスに '{data}' を送信しました。")
                     return f"<h1>'{data}' をデバイスに送信しました</h1>"
                 except serial.SerialException as e:
-                    print(f"❌ [Web] エラー: データの送信に失敗しました。: {e}")
                     return f"<h1>送信エラー</h1><p>{e}</p>", 500
             else:
-                print(f"🤔 [Web] 無効なデータ '{data}' がリクエストされました。")
-                return "<h1>無効なリクエストです</h1><p>'/send/1' または '/send/2' にアクセスしてください。</p>", 400
+                return "<h1>無効なリクエストです</h1>", 400
         else:
-            print("❌ [Web] エラー: シリアルポートが利用できません。")
             return "<h1>送信エラー</h1><p>サーバー側でシリアルデバイスが接続されていません。</p>", 503
-
     local_ip = get_ip_address()
     print("\n" + "="*50)
     print("🚀 Webサーバーが起動しました。")
-    print(f"   同じネットワーク内のブラウザから以下のURLにアクセスしてください:")
-    print(f"   - http://{local_ip}:{FLASK_PORT}/send/1")
-    print(f"   - http://{local_ip}:{FLASK_PORT}/send/2")
+    print(f"   URLにアクセスしてクリック操作ができます:")
+    print(f"   - http://{local_ip}:{FLASK_PORT}/send/1 (左クリック相当)")
+    print(f"   - http://{local_ip}:{FLASK_PORT}/send/2 (右クリック相当)")
     print("="*50 + "\n")
-    # use_reloader=Falseはスレッド内で実行する場合に必須
     app.run(host='0.0.0.0', port=FLASK_PORT, debug=False, use_reloader=False)
 
 def main():
     global fused_screen_x, fused_screen_y, last_cam_x, last_cam_y
+
+    # --- パラメータをローカル変数にコピー ---
+    p_sens_x = SENSITIVITY_X
+    p_sens_y = SENSITIVITY_Y
+    p_dead_zone = DEAD_ZONE
+    p_bright_thresh = BRIGHT_SPOT_THRESHOLD
+    p_alpha_normal = ALPHA_NORMAL
+    p_alpha_stationary = ALPHA_STATIONARY
 
     # --- Webカメラの初期化 ---
     cap = cv2.VideoCapture(0)
@@ -129,45 +134,62 @@ def main():
     # --- シリアルポートの初期化 ---
     ser = None
     port_to_use = SERIAL_PORT
-    if port_to_use == 'auto':
-        print("シリアルポートを自動検索中...")
+    if port_to_use.lower() == 'auto':
         port_to_use = find_serial_port()
-
     if port_to_use:
         try:
             ser = serial.Serial(port=port_to_use, baudrate=BAUD_RATE, timeout=0.1)
             print(f"✅ IMU接続成功: '{port_to_use}' @ {BAUD_RATE} bps")
-            time.sleep(2) # Arduinoなどのリセット待ち
+            time.sleep(2)
+            ser.flushInput()
         except serial.SerialException as e:
             print(f"⚠️ 警告: IMUポート '{port_to_use}' を開けません。カメラのみで動作します。\n   {e}")
+            ser = None
     else:
         print("⚠️ 警告: IMUが見つかりません。カメラのみで動作します。")
 
     # --- Webサーバーをバックグラウンドで起動 ---
-    # serオブジェクトを渡して、Webサーバーがシリアルポートを使えるようにする
     flask_thread = Thread(target=run_flask_app, args=(ser,), daemon=True)
     flask_thread.start()
 
     # --- 画面とカメラのサイズ設定 ---
-    actual_cam_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_cam_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    CAM_X_MIN = actual_cam_width * SAFETY_MARGIN_PERCENT
-    CAM_X_MAX = actual_cam_width * (1 - SAFETY_MARGIN_PERCENT)
-    CAM_Y_MIN = actual_cam_height * SAFETY_MARGIN_PERCENT
-    CAM_Y_MAX = actual_cam_height * (1 - SAFETY_MARGIN_PERCENT)
+    cam_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    cam_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    CAM_X_MIN = cam_width * SAFETY_MARGIN_PERCENT
+    CAM_X_MAX = cam_width * (1 - SAFETY_MARGIN_PERCENT)
+    CAM_Y_MIN = cam_height * SAFETY_MARGIN_PERCENT
+    CAM_Y_MAX = cam_height * (1 - SAFETY_MARGIN_PERCENT)
     SCREEN_WIDTH, SCREEN_HEIGHT = pyautogui.size()
 
     # --- GUIウィンドウの初期化 ---
     window = None
     if UI_ENABLED:
         sg.theme('Black')
-        layout = [
-            [sg.Text('適応型センサーフュージョン マウス追従', size=(60, 1), justification='center')],
-            [sg.Text('状態: 起動中...', key='-STATUS-', size=(60, 1), justification='center', text_color='lightgreen')],
-            [sg.Image(filename='', key='-IMAGE-')],
+        
+        # --- UIレイアウト定義 ---
+        video_column = [
+            [sg.Text('状態: 起動中...', key='-STATUS-', size=(40, 1), justification='center', text_color='lightgreen')],
+            [sg.Image(filename='', key='-IMAGE-')]
+        ]
+
+        param_column = [
+            [sg.Checkbox('IMUセンサーを利用する', default=True, key='-USE_IMU-', disabled=ser is None, enable_events=True)],
+            [sg.Frame('IMU設定', [
+                [sg.Text('感度 X', size=(10,1)), sg.Slider(range=(-20.0, 20.0), default_value=p_sens_x, resolution=0.1, orientation='h', key='-SENS_X-', enable_events=True, size=(20,15))],
+                [sg.Text('感度 Y', size=(10,1)), sg.Slider(range=(-20.0, 20.0), default_value=p_sens_y, resolution=0.1, orientation='h', key='-SENS_Y-', enable_events=True, size=(20,15))],
+                [sg.Text('デッドゾーン', size=(10,1)), sg.Slider(range=(0.0, 5.0), default_value=p_dead_zone, resolution=0.1, orientation='h', key='-DEAD_ZONE-', enable_events=True, size=(20,15))]
+            ], key='-IMU_FRAME-')],
+            [sg.Frame('カメラ・フュージョン設定', [
+                [sg.Text('輝度しきい値', size=(10,1)), sg.Slider(range=(50, 255), default_value=p_bright_thresh, resolution=1, orientation='h', key='-BRIGHT-', enable_events=True, size=(20,15))],
+                [sg.Text('追従度', size=(10,1)), sg.Slider(range=(0.1, 1.0), default_value=p_alpha_normal, resolution=0.05, orientation='h', key='-ALPHA_N-', enable_events=True, size=(20,15))],
+                [sg.Text('ノイズ抑制', size=(10,1)), sg.Slider(range=(0.0, 0.5), default_value=p_alpha_stationary, resolution=0.01, orientation='h', key='-ALPHA_S-', enable_events=True, size=(20,15))]
+            ])],
+            [sg.VPush()],
             [sg.Button('終了', size=(10, 1))]
         ]
-        window = sg.Window('Adaptive Sensor Fusion Mouse Tracker', layout, location=(800, 400), finalize=True)
+
+        layout = [[sg.Column(video_column), sg.VSeperator(), sg.Column(param_column)]]
+        window = sg.Window('Adaptive Sensor Fusion Mouse Tracker', layout, finalize=True)
 
     print("プログラムを開始しました。ESCキーでマウス制御を一時停止/再開できます。")
 
@@ -178,85 +200,93 @@ def main():
                 event, values = window.read(timeout=1)
                 if event == '終了' or event == sg.WIN_CLOSED:
                     break
+                
+                # --- UIからパラメータを更新 ---
+                p_sens_x = values['-SENS_X-']
+                p_sens_y = values['-SENS_Y-']
+                p_dead_zone = values['-DEAD_ZONE-']
+                p_bright_thresh = values['-BRIGHT-']
+                p_alpha_normal = values['-ALPHA_N-']
+                p_alpha_stationary = values['-ALPHA_S-']
+                use_imu = values['-USE_IMU-']
+
+                # IMUが無効なら関連スライダーも無効化
+                window['-IMU_FRAME-'].update(visible=use_imu)
+
+            else: # UI無効時のダミー変数
+                use_imu = ser is not None
 
             # --- 1. カメラデータの取得 ---
             ret, frame = cap.read()
-            if not ret:
-                print("エラー: カメラからフレームを取得できませんでした。")
-                break
-            frame = cv2.flip(frame, 1) # 鏡像反転
+            if not ret: break
+            frame = cv2.flip(frame, 1)
 
             # --- 2. IMUデータの取得 ---
-            is_imu_moving = False
-            imu_delta_x, imu_delta_y = 0.0, 0.0
-            if ser and ser.in_waiting > 0:
+            delta_h, delta_p, is_imu_moving = 0.0, 0.0, False
+            if ser and use_imu and ser.in_waiting > 0:
                 try:
-                    line = ser.readline().decode('utf-8').strip()
-                    parts = line.split(',') # 例: Time,PosX,PosY,PosZ,VelX,VelY,VelZ,AccX,AccY,AccZ
-                    if len(parts) >= 10:
-                        acc_x, acc_y = float(parts[7]), float(parts[8])
-                        if abs(acc_x) > STATIONARY_IMU_ACCEL_THRESHOLD or abs(acc_y) > STATIONARY_IMU_ACCEL_THRESHOLD:
-                            is_imu_moving = True
-
-                        pos_x, pos_y = float(parts[1]), float(parts[2])
-                        if 'last_imu_x' in locals():
-                            imu_delta_x = pos_x - last_imu_x
-                            imu_delta_y = pos_y - last_imu_y
-                        last_imu_x, last_imu_y = pos_x, pos_y
-                except (UnicodeDecodeError, ValueError, IndexError) as e:
-                    # print(f"IMUデータ解析エラー: {e}") # デバッグ用
+                    line = ser.readline().decode('utf-8', 'ignore').strip()
+                    if line:
+                        parts = line.split(',')
+                        if len(parts) == 6:
+                            delta_h, delta_p = float(parts[0]), float(parts[2])
+                            if abs(delta_h) > p_dead_zone or abs(delta_p) > p_dead_zone:
+                                is_imu_moving = True
+                except (UnicodeDecodeError, ValueError, IndexError):
                     pass
 
-            # --- 3. カメラ画像処理 (輝点追跡) ---
+            # --- 3. カメラ画像処理 ---
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(gray)
-            is_cam_tracking = maxVal >= BRIGHT_SPOT_THRESHOLD
+            (_, maxVal, _, maxLoc) = cv2.minMaxLoc(gray)
+            is_cam_tracking = maxVal >= p_bright_thresh
             
-            camera_screen_x, camera_screen_y = 0, 0
+            camera_screen_x, camera_screen_y = last_cam_x, last_cam_y
             if is_cam_tracking:
                 cam_x_raw, cam_y_raw = maxLoc
                 camera_screen_x = np.interp(cam_x_raw, [CAM_X_MIN, CAM_X_MAX], [0, SCREEN_WIDTH - 1])
                 camera_screen_y = np.interp(cam_y_raw, [CAM_Y_MIN, CAM_Y_MAX], [0, SCREEN_HEIGHT - 1])
 
             # --- 4. 状況判断とセンサーフュージョン ---
-            status_text, status_color = "待機中 (ESCで開始)", "gray"
-            
             if mouse_control_active:
-                # 状態2: IMU予測モード (カメラロスト & IMUは動いている)
-                if not is_cam_tracking and is_imu_moving and imu_delta_x != 0:
-                    status_text, status_color = "状態: IMU予測モード (カメラロスト)", "magenta"
-                    fused_screen_x += imu_delta_x * IMU_SENSITIVITY
-                    fused_screen_y -= imu_delta_y * IMU_SENSITIVITY # Y軸反転
-                    cv2.putText(frame, "IMU PREDICTION", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
-                
-                # カメラが追跡できている場合
-                elif is_cam_tracking:
-                    cam_delta = np.sqrt((camera_screen_x - last_cam_x)**2 + (camera_screen_y - last_cam_y)**2)
-                    is_cam_moving = cam_delta > STATIONARY_CAM_PIXEL_THRESHOLD
-                    
-                    # 状態3: カメラノイズ抑制モード (IMU静止 & カメラは微動)
-                    if not is_imu_moving and is_cam_moving:
-                        status_text, status_color = "状態: ノイズ抑制モード (IMU静止)", "orange"
-                        alpha = ALPHA_STATIONARY # IMUを信じて、カメラの補正を非常に弱くする
+                if use_imu and ser: # --- センサーフュージョンモード ---
+                    if not is_cam_tracking and is_imu_moving:
+                        status_text, status_color = "状態: IMU予測モード", "magenta"
+                        fused_screen_x += delta_h * p_sens_x
+                        fused_screen_y += delta_p * p_sens_y
+                        cv2.putText(frame, "IMU PREDICTION", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,255), 2)
+                    elif is_cam_tracking:
+                        cam_delta = np.sqrt((camera_screen_x - last_cam_x)**2 + (camera_screen_y - last_cam_y)**2)
+                        is_cam_moving_slightly = cam_delta > 0.1
+                        if not is_imu_moving and is_cam_moving_slightly:
+                            status_text, status_color = "状態: ノイズ抑制モード", "orange"
+                            alpha = p_alpha_stationary
+                            cv2.circle(frame, maxLoc, 20, (0, 165, 255), 2)
+                        else:
+                            status_text, status_color = "状態: 通常追跡モード", "cyan"
+                            alpha = p_alpha_normal
+                            cv2.circle(frame, maxLoc, 20, (255, 255, 0), 2)
                         fused_screen_x = (1 - alpha) * fused_screen_x + alpha * camera_screen_x
                         fused_screen_y = (1 - alpha) * fused_screen_y + alpha * camera_screen_y
-                        cv2.circle(frame, maxLoc, 20, (0, 165, 255), 2)
-                    
-                    # 状態1: 通常追跡モード (両方が動いている、または両方が静止)
                     else:
-                        status_text, status_color = "状態: 通常追跡モード", "cyan"
-                        alpha = ALPHA_NORMAL
+                        status_text, status_color = "状態: 追跡対象なし", "red"
+                
+                else: # --- カメラ単独モード ---
+                    if is_cam_tracking:
+                        status_text, status_color = "状態: カメラ単独モード", "lime"
+                        alpha = p_alpha_normal
                         fused_screen_x = (1 - alpha) * fused_screen_x + alpha * camera_screen_x
                         fused_screen_y = (1 - alpha) * fused_screen_y + alpha * camera_screen_y
-                        cv2.circle(frame, maxLoc, 20, (255, 255, 0), 2)
+                        cv2.circle(frame, maxLoc, 20, (0, 255, 0), 2)
+                    else:
+                        status_text, status_color = "状態: 追跡対象なし", "red"
             else:
-                 status_text, status_color = "状態: 一時停止中 (ESCで再開)", "yellow"
+                status_text, status_color = "状態: 一時停止中 (ESCキーで再開)", "yellow"
 
             # --- 5. マウス移動 & UI更新 ---
             if mouse_control_active:
                 final_x = np.clip(fused_screen_x, 0, SCREEN_WIDTH - 1)
                 final_y = np.clip(fused_screen_y, 0, SCREEN_HEIGHT - 1)
-                pyautogui.moveTo(final_x, final_y, duration=MOUSE_MOVE_DURATION)
+                pyautogui.moveTo(final_x, final_y)
 
             if UI_ENABLED:
                 window['-STATUS-'].update(status_text, text_color=status_color)
@@ -267,16 +297,13 @@ def main():
             last_cam_x, last_cam_y = camera_screen_x, camera_screen_y
 
     finally:
-        # --- クリーンアップ処理 ---
         print("\nクリーンアップ処理を実行しています...")
         cap.release()
-        if ser:
-            ser.close()
-            print("シリアルポートを閉じました。")
-        if UI_ENABLED and window:
-            window.close()
+        if ser and ser.is_open: ser.close(); print("シリアルポートを閉じました。")
+        if UI_ENABLED and window: window.close()
         keyboard.unhook_all()
         print("終了しました。")
 
 if __name__ == '__main__':
     main()
+

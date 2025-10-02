@@ -2,3 +2,5 @@ PyAutoGUI
 numpy
 PySimpleGUI
 opencv-python
+pygame
+requests
