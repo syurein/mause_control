@@ -29,13 +29,13 @@ FLASK_PORT = 5000
 SENSITIVITY_X = 5.0   # X軸（水平方向）の感度
 SENSITIVITY_Y = -10.0 # Y軸（垂直方向）の感度
 DEAD_ZONE = 0.5       # IMUの動きを無視する閾値
-
+DELTA_THRESH = 0.5    # カメラの動きを「わずかに動いている」とみなす閾値
 # --- カメラ設定 ---
-BRIGHT_SPOT_THRESHOLD = 100 # 追跡対象とみなす輝度の閾値
+BRIGHT_SPOT_THRESHOLD = 200 # 追跡対象とみなす輝度の閾値
 SAFETY_MARGIN_PERCENT = 0.1 # カメラ映像の端を除外する割合
 
 # --- センサーフュージョン設定 ---
-ALPHA_NORMAL = 0.8      # 通常時のカメラ追従度
+ALPHA_NORMAL = 0.4      # 通常時のカメラ追従度
 ALPHA_STATIONARY = 0.1  # 静止時のノイズ抑制強度
 
 # --- UI・デバッグ設定 ---
@@ -124,7 +124,8 @@ def main():
     p_bright_thresh = BRIGHT_SPOT_THRESHOLD
     p_alpha_normal = ALPHA_NORMAL
     p_alpha_stationary = ALPHA_STATIONARY
-
+    delta_threshold = DELTA_THRESH
+    noise_flag=False
     # --- Webカメラの初期化 ---
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -173,16 +174,18 @@ def main():
         ]
 
         param_column = [
-            [sg.Checkbox('IMUセンサーを利用する', default=True, key='-USE_IMU-', disabled=ser is None, enable_events=True)],
+            [sg.Checkbox('IMUセンサーを利用する', default=False, key='-USE_IMU-', disabled=ser is None, enable_events=True)],
             [sg.Frame('IMU設定', [
-                [sg.Text('感度 X', size=(10,1)), sg.Slider(range=(-20.0, 20.0), default_value=p_sens_x, resolution=0.1, orientation='h', key='-SENS_X-', enable_events=True, size=(20,15))],
-                [sg.Text('感度 Y', size=(10,1)), sg.Slider(range=(-20.0, 20.0), default_value=p_sens_y, resolution=0.1, orientation='h', key='-SENS_Y-', enable_events=True, size=(20,15))],
-                [sg.Text('デッドゾーン', size=(10,1)), sg.Slider(range=(0.0, 5.0), default_value=p_dead_zone, resolution=0.1, orientation='h', key='-DEAD_ZONE-', enable_events=True, size=(20,15))]
+                [sg.Text('感度 X', size=(10,1)), sg.Slider(range=(-100.0, 100.0), default_value=p_sens_x, resolution=0.1, orientation='h', key='-SENS_X-', enable_events=True, size=(20,15))],
+                [sg.Text('感度 Y', size=(10,1)), sg.Slider(range=(-100.0, 100.0), default_value=p_sens_y, resolution=0.1, orientation='h', key='-SENS_Y-', enable_events=True, size=(20,15))],
+                [sg.Text('静止閾値', size=(10,1)), sg.Slider(range=(75.0, 80.0), default_value=p_dead_zone, resolution=0.1, orientation='h', key='-DEAD_ZONE-', enable_events=True, size=(20,15))]
             ], key='-IMU_FRAME-')],
             [sg.Frame('カメラ・フュージョン設定', [
+                [sg.Checkbox('ノイズ抑制モード', default=False, key='-USE_DELAY-', disabled=ser is None, enable_events=True)],
                 [sg.Text('輝度しきい値', size=(10,1)), sg.Slider(range=(50, 255), default_value=p_bright_thresh, resolution=1, orientation='h', key='-BRIGHT-', enable_events=True, size=(20,15))],
-                [sg.Text('追従度', size=(10,1)), sg.Slider(range=(0.1, 1.0), default_value=p_alpha_normal, resolution=0.05, orientation='h', key='-ALPHA_N-', enable_events=True, size=(20,15))],
-                [sg.Text('ノイズ抑制', size=(10,1)), sg.Slider(range=(0.0, 0.5), default_value=p_alpha_stationary, resolution=0.01, orientation='h', key='-ALPHA_S-', enable_events=True, size=(20,15))]
+                [sg.Text('追従度（ここでスムーズに動くかどうかが決まる）', size=(10,1)), sg.Slider(range=(0.1, 1.0), default_value=p_alpha_normal, resolution=0.05, orientation='h', key='-ALPHA_N-', enable_events=True, size=(20,15))],
+                [sg.Text('ノイズ抑制（動かないときのブレを抑える）', size=(10,1)), sg.Slider(range=(0.1, 0.5), default_value=p_alpha_stationary, resolution=0.01, orientation='h', key='-ALPHA_S-', enable_events=True, size=(20,15))],
+                [sg.Text('カメラ動作閾値', size=(10,1)), sg.Slider(range=(0, 10), default_value=delta_threshold, resolution=0.01, orientation='h', key='-CAM-', enable_events=True, size=(20,15))]
             ])],
             [sg.VPush()],
             [sg.Button('終了', size=(10, 1))]
@@ -209,7 +212,8 @@ def main():
                 p_alpha_normal = values['-ALPHA_N-']
                 p_alpha_stationary = values['-ALPHA_S-']
                 use_imu = values['-USE_IMU-']
-
+                noise_flag=values['-USE_DELAY-']
+                delta_threshold=values['-CAM-']
                 # IMUが無効なら関連スライダーも無効化
                 window['-IMU_FRAME-'].update(visible=use_imu)
 
@@ -256,7 +260,7 @@ def main():
                         cv2.putText(frame, "IMU PREDICTION", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,255), 2)
                     elif is_cam_tracking:
                         cam_delta = np.sqrt((camera_screen_x - last_cam_x)**2 + (camera_screen_y - last_cam_y)**2)
-                        is_cam_moving_slightly = cam_delta > 0.1
+                        is_cam_moving_slightly = cam_delta > delta_threshold
                         if not is_imu_moving and is_cam_moving_slightly:
                             status_text, status_color = "状態: ノイズ抑制モード", "orange"
                             alpha = p_alpha_stationary
@@ -272,11 +276,20 @@ def main():
                 
                 else: # --- カメラ単独モード ---
                     if is_cam_tracking:
-                        status_text, status_color = "状態: カメラ単独モード", "lime"
-                        alpha = p_alpha_normal
+                        cam_delta = np.sqrt((camera_screen_x - last_cam_x)**2 + (camera_screen_y - last_cam_y)**2)
+                        is_cam_moving_slightly = cam_delta > delta_threshold
+                        if noise_flag:
+                            status_text, status_color = "状態: 単独ノイズ抑制モード", "orange"
+                            alpha = p_alpha_stationary
+                            
+                        else:
+                            status_text, status_color = "状態: カメラ単独モード", "lime"
+                            alpha = p_alpha_normal
                         fused_screen_x = (1 - alpha) * fused_screen_x + alpha * camera_screen_x
                         fused_screen_y = (1 - alpha) * fused_screen_y + alpha * camera_screen_y
                         cv2.circle(frame, maxLoc, 20, (0, 255, 0), 2)
+                    
+
                     else:
                         status_text, status_color = "状態: 追跡対象なし", "red"
             else:

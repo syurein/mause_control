@@ -1,6 +1,9 @@
 PyAutoGUI
 numpy
-PySimpleGUI
+PySimpleGUI==5.0.8.2
 opencv-python
 pygame
 requests
+pyserial
+keyboard
+flask
