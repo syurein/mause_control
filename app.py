@@ -165,7 +165,7 @@ def main():
     # --- GUIウィンドウの初期化 ---
     window = None
     if UI_ENABLED:
-        sg.theme('Black')
+        #sg.theme('Black')
         
         # --- UIレイアウト定義 ---
         video_column = [
@@ -191,7 +191,7 @@ def main():
             [sg.Button('終了', size=(10, 1))]
         ]
 
-        layout = [[sg.Column(video_column), sg.VSeperator(), sg.Column(param_column)]]
+        layout = [[sg.Column(video_column), sg.VSeparator(), sg.Column(param_column)]]
         window = sg.Window('Adaptive Sensor Fusion Mouse Tracker', layout, finalize=True)
 
     print("プログラムを開始しました。ESCキーでマウス制御を一時停止/再開できます。")

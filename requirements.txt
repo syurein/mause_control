@@ -1,10 +1,10 @@
-PyAutoGUI
-numpy
-PySimpleGUI==5.0.8.2
-opencv-python
-pygame
-requests
-pyserial
-serial
-keyboard
+--extra-index-url https://PySimpleGUI.net/install
 flask
+keyboard
+numpy
+opencv-python
+pyautogui
+pygame
+pyserial
+pysimplegui==5.0.8.2
+requests
